@@ -12,13 +12,14 @@ import (
 	"time"
 	"unicode"
 	"unsafe"
+	"os/signal"
 )
 
 /*** defines ***/
 
 const KILO_VERSION = "0.0.1"
 const KILO_TAB_STOP = 8
-const KILO_QUIT_TIMES = 3
+const KILO_QUIT_TIMES = 1
 const (
 	BACKSPACE   = 127
 	ARROW_LEFT  = 1000 + iota
@@ -54,9 +55,9 @@ type editorSyntax struct {
 	filetype  string
 	filematch []string
 	keywords  []string
-    singleLineCommentStart []byte
-    multiLineCommentStart  []byte
-    multiLineCommentEnd    []byte
+	singleLineCommentStart []byte
+	multiLineCommentStart  []byte
+	multiLineCommentEnd    []byte
 	flags     int
 }
 
@@ -132,6 +133,7 @@ func die(err error) {
 	disableRawMode()
 	io.WriteString(os.Stdout, "\x1b[2J")
 	io.WriteString(os.Stdout, "\x1b[H")
+	io.WriteString(os.Stdout, "\x1b[3J")
 	log.Fatal(err)
 }
 
@@ -194,45 +196,30 @@ func editorReadKey() int {
 				}
 				if buffer[0] == '~' {
 					switch seq[1] {
-					case '1':
-						return HOME_KEY
-					case '3':
-						return DEL_KEY
-					case '4':
-						return END_KEY
-					case '5':
-						return PAGE_UP
-					case '6':
-						return PAGE_DOWN
-					case '7':
-						return HOME_KEY
-					case '8':
-						return END_KEY
+					case '1': return HOME_KEY
+					case '3': return DEL_KEY
+					case '4': return END_KEY
+					case '5': return PAGE_UP
+					case '6': return PAGE_DOWN
+					case '7': return HOME_KEY
+					case '8': return END_KEY
 					}
 				}
 				// XXX - what happens here?
 			} else {
 				switch seq[1] {
-				case 'A':
-					return ARROW_UP
-				case 'B':
-					return ARROW_DOWN
-				case 'C':
-					return ARROW_RIGHT
-				case 'D':
-					return ARROW_LEFT
-				case 'H':
-					return HOME_KEY
-				case 'F':
-					return END_KEY
+				case 'A': return ARROW_UP
+				case 'B': return ARROW_DOWN
+				case 'C': return ARROW_RIGHT
+				case 'D': return ARROW_LEFT
+				case 'H': return HOME_KEY
+				case 'F': return END_KEY
 				}
 			}
 		} else if seq[0] == '0' {
 			switch seq[1] {
-			case 'H':
-				return HOME_KEY
-			case 'F':
-				return END_KEY
+			case 'H': return HOME_KEY
+			case 'F': return END_KEY
 			}
 		}
 
@@ -410,18 +397,12 @@ func editorUpdateSyntax(row *erow) {
 
 func editorSyntaxToColor(hl byte) int {
 	switch hl {
-	case HL_COMMENT, HL_MLCOMMENT:
-		return 36
-	case HL_KEYWORD1:
-		return 32
-	case HL_KEYWORD2:
-		return 33
-	case HL_STRING:
-		return 35
-	case HL_NUMBER:
-		return 31
-	case HL_MATCH:
-		return 34
+		case HL_COMMENT, HL_MLCOMMENT: return 36
+		case HL_KEYWORD1: return 32
+		case HL_KEYWORD2: return 33
+		case HL_STRING:   return 35
+		case HL_NUMBER:   return 31
+		case HL_MATCH:    return 34
 	}
 	return 37
 }
@@ -675,8 +656,7 @@ var savedHlLine int
 var savedHl []byte
 
 func editorFindCallback(qry []byte, key int) {
-
-	if savedHlLine > 0 {
+	if savedHl != nil {
 		copy(E.rows[savedHlLine].hl, savedHl)
 		savedHlLine = 0
 		savedHl = nil
@@ -729,8 +709,7 @@ func editorFind() {
 	savedCy     := E.cy
 	savedColoff := E.coloff
 	savedRowoff := E.rowoff
-	query := editorPrompt("Search: %s (ESC/Arrows/Enter)",
-		editorFindCallback)
+	query := editorPrompt("Search: %s (ESC/Arrows/Enter)", editorFindCallback)
 	if query == "" {
 		E.cx = savedCx
 		E.cy = savedCy
@@ -768,10 +747,8 @@ func editorPrompt(prompt string, callback func([]byte,int)) string {
 				}
 				return string(buf)
 			}
-		} else {
-			if unicode.IsPrint(rune(c)) {
-				buf = append(buf, byte(c))
-			}
+		} else if !unicode.IsControl(rune(c)) && c < 128 {
+			buf = append(buf, byte(c))
 		}
 		if callback != nil {
 			callback(buf, c)
@@ -832,6 +809,7 @@ func editorProcessKeypress() {
 		}
 		io.WriteString(os.Stdout, "\x1b[2J")
 		io.WriteString(os.Stdout, "\x1b[H")
+		io.WriteString(os.Stdout, "\x1b[3J")
 		disableRawMode()
 		os.Exit(0)
 	case ('s' & 0x1f):
@@ -974,20 +952,21 @@ func editorDrawRows(ab *bytes.Buffer) {
 
 func editorDrawStatusBar(ab *bytes.Buffer) {
 	ab.WriteString("\x1b[7m")
+	ab.WriteString("\x1b[1m")
 	fname := E.filename
 	if fname == "" {
 		fname = "[No Name]"
 	}
 	modified := ""
-	if E.dirty { modified = "(modified)" }
-	status := fmt.Sprintf("%.20s - %d lines %s", fname, E.numRows, modified)
+	if E.dirty { modified = "[+]" }
+	status := fmt.Sprintf("%.20s - %dL %s", fname, E.numRows, modified)
 	ln := len(status)
 	if ln > E.screenCols { ln = E.screenCols }
-	filetype := "no ft"
+	filetype := "?"
 	if E.syntax != nil {
 		filetype = E.syntax.filetype
 	}
-	rstatus := fmt.Sprintf("%s | %d/%d", filetype, E.cy+1, E.numRows)
+	rstatus := fmt.Sprintf("%s | %d,%d/%d", filetype, E.cy+1, E.cx+1, E.numRows)
 	rlen := len(rstatus)
 	ab.WriteString(status[:ln])
 	for ln < E.screenCols {
@@ -1019,23 +998,48 @@ func editorSetStatusMessage(args...interface{}) {
 
 /*** init ***/
 
-func initEditor() {
-	// Initialization a la C not necessary.
+func updateWindowSize() {
+	io.WriteString(os.Stdout, "\x1b[3J")
+
 	if getWindowSize(&E.screenRows, &E.screenCols) == -1 {
 		die(fmt.Errorf("couldn't get screen size"))
 	}
 	E.screenRows -= 2
 }
 
+func handleSigwinch() {
+	updateWindowSize()
+	editorRefreshScreen()
+}
+
+func registerSigwinch() {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, syscall.SIGWINCH)
+	go func() {
+		for {
+			<-c
+			handleSigwinch()
+		}
+	}()
+}
+
+func initEditor() {
+	// Initialization a la C not necessary.
+
+	updateWindowSize()
+	registerSigwinch()
+}
+
 func main() {
 	enableRawMode()
 	defer disableRawMode()
 	initEditor()
+
 	if len(os.Args) > 1 {
 		editorOpen(os.Args[1])
 	}
 
-	editorSetStatusMessage("HELP: Ctrl-S = save | Ctrl-Q = quit | Ctrl-F = find")
+	editorSetStatusMessage("KILO - version %s", KILO_VERSION)
 
 	for {
 		editorRefreshScreen()
